@@ -27,12 +27,23 @@ PowerRankings -- Perform common operations
 WeeklyRankings -- Perform operations specific to weekly rankings
 SeasonRankings -- Perform operations specific to season rankings
 """
-
-import requests
+import argparse
+from pyvirtualdisplay import Display
+from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup
 import re
+import requests
 import datetime
 
+display = Display(visible=0, size=(800,600))
+display.start()
+driver = webdriver.Firefox();
 
 class PowerRankings:
     """
@@ -52,7 +63,6 @@ class PowerRankings:
         None
     """
     _BS_PARSER = "lxml"
-
     def __init__(self, leagueId, seasonId, lowerBetterCategories):
         """Create a PowerRankings instance.
 
@@ -76,28 +86,32 @@ class PowerRankings:
            username -- the login username
            password -- the login password
         """
-        postData = {
-            'SUBMIT': '1',
-            'aff_code': 'espn_fantgames',
-            'appRedirect':
-                'http://games.espn.go.com/flb/leagueoffice?\
-                leagueId=%s&seasonId=%s' %
-                (self._leagueId, self._seasonId),
-            'cookieDomain': '.go.com',
-            'failedLocation':
-                'http://games.espn.go.com/flb/signin?\
-                redir=http%%3A%%2F%%2Fgames.espn.go.com%%2Fflb%%2Fleagueoffice\
-                %%3FleagueId%%3D%s%%26seasonId%%3D%s&e=1' %
-                (self._leagueId, self._seasonId),
-            'multipleDomains': 'true',
-            'password': password,
-            'submit': 'Sign In',
-            'username': username,
-            'failedAttempts': '2'
-        }
-        self._session.post("https://r.espn.go.com/espn/fantasy/login",
-                           params=postData)
+        #driver = webdriver.Firefox();
+        global driver
+        driver.get("http://games.espn.go.com/flb/signin")
 
+        WebDriverWait(driver, 30).until(EC.presence_of_all_elements_located((By.XPATH,"(//iframe)")))
+        loginframe = driver.find_element_by_id("disneyid-iframe")
+        driver.switch_to.frame(loginframe)
+
+        passfield = driver.find_elements_by_xpath("//input[@type='password']")
+        passfield = passfield[0]
+
+        userfield = driver.find_elements_by_xpath("//input[@type='text']")
+        userfield = userfield[0]
+
+        enter = driver.find_elements_by_xpath("//button[@type='submit']")
+        enterBtn = enter[0]
+        
+        userfield.send_keys(username)
+        passfield.send_keys(password)
+        enterBtn.click()
+        
+        try:
+            WebDriverWait(driver, 50).until(EC.title_contains("Fantasy Baseball - Free Fantasy Baseball Leagues, Rankings and more -- ESPN"))        
+        finally:
+            print "<!--Login Successful!-->"            
+    
     def postMessage(self, message, subject='Power Rankings'):
         """Post a message to the league message board.
 
@@ -129,19 +143,18 @@ class PowerRankings:
            powerRankings method.
         """
         teamAbbrMap = {}
-
-        r = self._session.get(
-            'http://games.espn.go.com/flb/leaguesetup/ownerinfo',
-            params={'leagueId': self._leagueId,
-                    'seasonId': self._seasonId})
-        soup = BeautifulSoup(r.text, PowerRankings._BS_PARSER)
-        ownerRows = soup.findAll("tr", "ownerRow")
+        
+        r = driver.get('http://games.espn.go.com/flb/leaguesetup/ownerinfo?leagueId=%s&seasonId=%s' % (self._leagueId, self._seasonId))
+        soup = BeautifulSoup(driver.page_source, PowerRankings._BS_PARSER)
+        ownerRows = soup.findAll("tr", {'class':"ownerRow"})
         for row in ownerRows:
             cells = row.findAll("td")
-            if re.compile("[0-9]+").match(str(cells[0].contents[0])):
+            if re.compile("[0-9]+").match(str(cells[0].contents[0].encode('utf-8'))):
                 abbr = cells[1].contents[0]
                 teamName = cells[2].findAll('a')[0].contents[0]
-                teamAbbrMap[str(teamName.strip())] = str(abbr.strip())
+                teamAbbrMap[str(teamName.strip().encode('utf-8'))] = (abbr.strip().encode('utf-8')).encode('utf-8')
+
+        driver.close()
 
         return teamAbbrMap
 
@@ -187,7 +200,7 @@ class PowerRankings:
         schedSoup = soup.find_all('tr')
         matchupRows = [tr for tr in schedSoup[3:]
                        if len(tr.find('td').contents) > 0 and
-                       str(tr.find('td').contents[0]).startswith('Matchup')]
+                       (tr.find('td').contents[0].encode('utf-8')).startswith('Matchup')]
         return (teamName, matchupRows)
 
     def _teamIds(self):
@@ -218,7 +231,14 @@ class PowerRankings:
         totals = []
 
         for t in zip(teamStats, categories):
-            total = float(t[0].contents[0])
+        # We need to account for pitching minimums in pitching stats! Let's add 10!
+            pitchBelow = BeautifulSoup(str(t[0]), PowerRankings._BS_PARSER).findAll(class_="precise belowMinimum")
+            if pitchBelow:
+                for pitch in pitchBelow:
+                    total = float(t[0].contents[0])
+                    total += 10
+            else:
+                total = float(t[0].contents[0])
             if t[1] in self._lowerBetterCategories:
                 total *= -1
             totals.append(total)
